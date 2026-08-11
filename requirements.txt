@@ -1,0 +1,4 @@
+aiohttp>=3.9.0
+rich>=13.7.0
+# Opcional: solo necesario para --credentials con service account JSON
+cryptography>=41.0.0
