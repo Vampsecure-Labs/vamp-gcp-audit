@@ -195,7 +195,12 @@ BANNER = r"""
   ██     ██ ██      ██         ██   ██ ██    ██ ██   ██ ██    ██
   ██████████  ██████ ██        ██   ██  ██████  ██████  ██    ██
 
-     by VampSecure Studios · vamp-gcp-audit v{ver} · GCP Security Auditor
+  ____   ____    _    __  __ ____  _____ ____ _   _ ____  _____   _        _    ____ ____
+ \ \ / / _  |  / \  |  \/  |  _ \/ ____/ ___| | | |  _ \| ____| | |      / \  | __ ) ___|
+  \ V / (_| | / _ \ | |\/| | |_) \___ \| |___| | | | |_) |  _|   | |     / _ \ |  _ \___ \
+   | |  \__, |/ ___ \| |  | |  __/ ___) |___  | |_| |  _ <| |___  | |___ / ___ \| |_) |__) |
+   |_|     /_/_/   \_|_|  |_|_|   |____/\____|\___/|_| \_|_____| |_____/_/   \_|____/____/
+     by Antonio Hernandez "Belky" — VampSecure Studios · vamp-gcp-audit v{ver} · GCP Security Auditor
      ─────────────────────────────────────────────────────────────────────
      USO EXCLUSIVO EN AUDITORÍAS AUTORIZADAS · El uso no autorizado es ilegal
 """.format(ver=VERSION)
