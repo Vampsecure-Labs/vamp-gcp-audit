@@ -91,7 +91,7 @@ from rich.text import Text
 # Constantes y configuración global
 # ---------------------------------------------------------------------------
 
-VERSION   = "1.0"
+VERSION   = "1.1"
 TOOL_NAME = "vamp-gcp-audit"
 
 console = Console()
@@ -1392,6 +1392,329 @@ async def audit_project(client: GCPClient) -> list[Finding]:
 
 
 # ---------------------------------------------------------------------------
+# Módulo 7: Cloud Run Services — v1.1
+# ---------------------------------------------------------------------------
+
+# Endpoint base de la API Cloud Run (v1 — compatible con segunda generación)
+GCP_RUN_API = "https://run.googleapis.com"
+
+# Regex de secretos en variables de entorno de Cloud Run (mismo patrón VSL)
+_CLOUDRUN_SECRET_ENV_RE = re.compile(
+    r"(?i)(password|passwd|secret|token|api[_-]?key|apikey|private[_-]?key|"
+    r"credentials|auth[_-]?token|access[_-]?key|client[_-]?secret)",
+)
+
+
+async def audit_cloud_run(client: GCPClient) -> list[Finding]:
+    """
+    Audita los servicios Cloud Run del proyecto GCP.
+
+    Para cada servicio comprueba:
+      - IAM policy con allUsers invoker → CRITICAL (acceso público sin auth)
+      - IAM policy con allAuthenticatedUsers invoker → HIGH
+      - Variables de entorno con nombres de credencial y valor en claro → CRITICAL
+    """
+    findings: list[Finding] = []
+    project   = client.project_id
+
+    # La API v1 con location='-' devuelve servicios de todas las regiones
+    url = f"{GCP_RUN_API}/v1/projects/{project}/locations/-/services"
+    try:
+        services: list[dict] = await client.get_paginated(url, "items")
+    except RuntimeError as exc:
+        findings.append(Finding(
+            tool=TOOL_NAME, severity="INFO", type="cloudrun-error",
+            title="No se pudieron listar los servicios Cloud Run",
+            description=str(exc),
+            affected=f"projects/{project}",
+            recommendation="Verifica permisos run.services.list en el proyecto.",
+            module="CloudRun",
+        ))
+        return findings
+
+    if not services:
+        findings.append(Finding(
+            tool=TOOL_NAME, severity="INFO", type="cloudrun-none",
+            title="No se encontraron servicios Cloud Run en el proyecto",
+            description=(
+                "El proyecto no tiene servicios Cloud Run activos o no hay "
+                "permiso para listarlos."
+            ),
+            affected=f"projects/{project}",
+            recommendation="Sin acción requerida si el proyecto no usa Cloud Run.",
+            module="CloudRun",
+        ))
+        return findings
+
+    for svc in services:
+        meta      = svc.get("metadata", {})
+        svc_name  = meta.get("name", "?")
+        # selfLink tiene la forma /apis/serving.knative.dev/v1/namespaces/PROJECT/services/NAME
+        # Para la API getIamPolicy usamos el nombre completo de recurso
+        namespace = meta.get("namespace", project)
+        svc_url   = svc.get("status", {}).get("url", "")
+        svc_fqn   = (
+            f"projects/{namespace}/locations/-/services/{svc_name}"
+        )
+
+        # Comprobar IAM policy del servicio
+        iam_url = f"{GCP_RUN_API}/v1/{svc_fqn}:getIamPolicy"
+        try:
+            iam_data = await client.post(iam_url, {})
+        except Exception:
+            iam_data = {}
+
+        for binding in iam_data.get("bindings", []):
+            role    = binding.get("role", "")
+            members = binding.get("members", [])
+
+            if "allUsers" in members:
+                findings.append(Finding(
+                    tool=TOOL_NAME, severity="CRITICAL",
+                    type="cloudrun-public-all",
+                    title=(
+                        f"Cloud Run '{svc_name}' accesible públicamente "
+                        "sin autenticación (allUsers)"
+                    ),
+                    description=(
+                        f"El servicio Cloud Run '{svc_name}' (URL: {svc_url}) "
+                        f"tiene el rol '{role}' asignado a 'allUsers'. Cualquier "
+                        "usuario de internet puede invocarlo sin autenticación."
+                    ),
+                    affected=svc_url or svc_fqn,
+                    recommendation=(
+                        "Eliminar el binding 'allUsers' de la IAM policy:\n"
+                        f"  gcloud run services remove-iam-policy-binding {svc_name} \\\n"
+                        "    --member='allUsers' --role='roles/run.invoker'\n"
+                        "Si el servicio debe ser público, implementar autenticación "
+                        "a nivel de aplicación (JWT, API keys, Identity-Aware Proxy)."
+                    ),
+                    module="CloudRun",
+                ))
+            elif "allAuthenticatedUsers" in members:
+                findings.append(Finding(
+                    tool=TOOL_NAME, severity="HIGH",
+                    type="cloudrun-public-authenticated",
+                    title=(
+                        f"Cloud Run '{svc_name}' accesible por todos "
+                        "los usuarios autenticados de Google"
+                    ),
+                    description=(
+                        f"El servicio Cloud Run '{svc_name}' tiene el rol '{role}' "
+                        "asignado a 'allAuthenticatedUsers'. Cualquier cuenta de "
+                        "Google autenticada (incluyendo cuentas personales) puede "
+                        "invocar el servicio."
+                    ),
+                    affected=svc_url or svc_fqn,
+                    recommendation=(
+                        "Restringir el acceso a identidades específicas (service "
+                        "accounts o grupos concretos) en lugar de "
+                        "'allAuthenticatedUsers'."
+                    ),
+                    module="CloudRun",
+                ))
+
+        # Comprobar variables de entorno con secretos en claro
+        contenedores = (
+            svc.get("spec", {})
+               .get("template", {})
+               .get("spec", {})
+               .get("containers", [])
+        )
+        for contenedor in contenedores:
+            for env in contenedor.get("env", []):
+                env_name  = env.get("name", "")
+                env_value = env.get("value", "")
+                # Ignorar referencias a Secret Manager (no tienen 'value' directo)
+                if not env_value:
+                    continue
+                if _CLOUDRUN_SECRET_ENV_RE.search(env_name):
+                    redacted = (
+                        env_value[:4] + "****"
+                        if len(env_value) > 4 else "****"
+                    )
+                    findings.append(Finding(
+                        tool=TOOL_NAME, severity="CRITICAL",
+                        type="cloudrun-secret-env",
+                        title=(
+                            f"Cloud Run '{svc_name}': secreto en claro "
+                            f"en variable de entorno '{env_name}'"
+                        ),
+                        description=(
+                            f"La variable '{env_name}' del servicio Cloud Run "
+                            f"'{svc_name}' tiene un nombre que sugiere credencial "
+                            "y su valor está definido en claro en la configuración "
+                            "del servicio (visible en la API y en la consola GCP)."
+                        ),
+                        affected=svc_url or svc_fqn,
+                        recommendation=(
+                            "Migrar el secreto a Secret Manager y referenciarlo:\n"
+                            "  env:\n"
+                            "  - name: MY_SECRET\n"
+                            "    valueFrom:\n"
+                            "      secretKeyRef:\n"
+                            "        name: my-secret\n"
+                            "        key: latest\n"
+                            "Ref: https://cloud.google.com/run/docs/configuring/secrets"
+                        ),
+                        module="CloudRun",
+                        extra={
+                            "variable": env_name,
+                            "value_redacted": redacted,
+                        },
+                    ))
+
+    return findings
+
+
+# ---------------------------------------------------------------------------
+# Módulo 8: Artifact Registry — v1.1
+# ---------------------------------------------------------------------------
+
+GCP_AR_API = "https://artifactregistry.googleapis.com"
+
+
+async def audit_artifact_registry(client: GCPClient) -> list[Finding]:
+    """
+    Audita los repositorios de Artifact Registry del proyecto GCP.
+
+    Para cada repositorio comprueba:
+      - IAM policy con allUsers reader → CRITICAL (acceso público a artefactos)
+      - IAM policy con allAuthenticatedUsers reader → HIGH
+      - Escaneo de vulnerabilidades no configurado → MEDIUM
+    """
+    findings: list[Finding] = []
+    project   = client.project_id
+
+    url = (
+        f"{GCP_AR_API}/v1/projects/{project}/locations/-/repositories"
+    )
+    try:
+        repos: list[dict] = await client.get_paginated(url, "repositories")
+    except RuntimeError as exc:
+        findings.append(Finding(
+            tool=TOOL_NAME, severity="INFO", type="ar-error",
+            title="No se pudieron listar los repositorios de Artifact Registry",
+            description=str(exc),
+            affected=f"projects/{project}",
+            recommendation="Verifica permisos artifactregistry.repositories.list.",
+            module="ArtifactRegistry",
+        ))
+        return findings
+
+    if not repos:
+        findings.append(Finding(
+            tool=TOOL_NAME, severity="INFO", type="ar-none",
+            title="No se encontraron repositorios de Artifact Registry",
+            description=(
+                "El proyecto no tiene repositorios de Artifact Registry o "
+                "no hay permiso para listarlos."
+            ),
+            affected=f"projects/{project}",
+            recommendation="Sin acción requerida si el proyecto no usa Artifact Registry.",
+            module="ArtifactRegistry",
+        ))
+        return findings
+
+    for repo in repos:
+        repo_name   = repo.get("name", "?")
+        repo_short  = repo_name.split("/")[-1]
+        repo_format = repo.get("format", "?")
+
+        # Comprobar IAM policy del repositorio
+        iam_url = f"{GCP_AR_API}/v1/{repo_name}:getIamPolicy"
+        try:
+            iam_data = await client.post(iam_url, {})
+        except Exception:
+            iam_data = {}
+
+        for binding in iam_data.get("bindings", []):
+            role    = binding.get("role", "")
+            members = binding.get("members", [])
+
+            if "allUsers" in members:
+                findings.append(Finding(
+                    tool=TOOL_NAME, severity="CRITICAL",
+                    type="ar-public-all",
+                    title=(
+                        f"Artifact Registry '{repo_short}' accesible "
+                        "públicamente sin autenticación (allUsers)"
+                    ),
+                    description=(
+                        f"El repositorio '{repo_short}' (formato: {repo_format}) "
+                        f"tiene el rol '{role}' asignado a 'allUsers'. Cualquier "
+                        "usuario de internet puede descargar artefactos sin "
+                        "autenticación."
+                    ),
+                    affected=repo_name,
+                    recommendation=(
+                        "Eliminar el binding 'allUsers':\n"
+                        f"  gcloud artifacts repositories remove-iam-policy-binding "
+                        f"{repo_short} \\\n"
+                        "    --location=LOCATION --member='allUsers' \\\n"
+                        "    --role=ROLE\n"
+                        "Usar roles específicos para service accounts o grupos."
+                    ),
+                    module="ArtifactRegistry",
+                ))
+            elif "allAuthenticatedUsers" in members:
+                findings.append(Finding(
+                    tool=TOOL_NAME, severity="HIGH",
+                    type="ar-public-authenticated",
+                    title=(
+                        f"Artifact Registry '{repo_short}' accesible por "
+                        "todos los usuarios autenticados de Google"
+                    ),
+                    description=(
+                        f"El repositorio '{repo_short}' tiene el rol '{role}' "
+                        "asignado a 'allAuthenticatedUsers'. Cualquier cuenta "
+                        "de Google autenticada puede acceder a los artefactos."
+                    ),
+                    affected=repo_name,
+                    recommendation=(
+                        "Cambiar el acceso para usar identidades específicas "
+                        "en lugar de 'allAuthenticatedUsers'."
+                    ),
+                    module="ArtifactRegistry",
+                ))
+
+        # Comprobar si el escaneo de vulnerabilidades está configurado
+        # La API expone 'vulnerabilityScanning' en el objeto repositorio
+        vuln_scan = repo.get("vulnerabilityScanning", {})
+        scan_enabled = (
+            vuln_scan
+            and vuln_scan.get("enablementConfig") not in (None, "", "DISABLED")
+        )
+        if not scan_enabled:
+            findings.append(Finding(
+                tool=TOOL_NAME, severity="MEDIUM",
+                type="ar-no-vuln-scan",
+                title=(
+                    f"Artifact Registry '{repo_short}': escaneo de "
+                    "vulnerabilidades no activado"
+                ),
+                description=(
+                    f"El repositorio '{repo_short}' (formato: {repo_format}) "
+                    "no tiene activado el escaneo automático de vulnerabilidades. "
+                    "Sin este control, imágenes con CVEs conocidos pueden "
+                    "desplegarse en producción sin detección."
+                ),
+                affected=repo_name,
+                recommendation=(
+                    "Activar el escaneo de vulnerabilidades:\n"
+                    f"  gcloud artifacts repositories update {repo_short} \\\n"
+                    "    --location=LOCATION \\\n"
+                    "    --update-labels=vulnerability-scanning=enabled\n"
+                    "O desde la consola: Artifact Registry → Repositorio → "
+                    "Configuración → Vulnerability scanning: Enabled."
+                ),
+                module="ArtifactRegistry",
+            ))
+
+    return findings
+
+
+# ---------------------------------------------------------------------------
 # GCPAuditor — orquestador de todos los módulos
 # ---------------------------------------------------------------------------
 
@@ -1427,6 +1750,8 @@ class GCPAuditor:
             ("Cloud Functions",        audit_functions),
             ("Firewall Rules",         audit_firewall),
             ("Project-Level Risks",    audit_project),
+            ("Cloud Run Services",     audit_cloud_run),        # v1.1
+            ("Artifact Registry",      audit_artifact_registry), # v1.1
         ]
 
         # Ejecutar todos los módulos en paralelo
@@ -1736,7 +2061,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--modules", "-m",
         nargs="+",
-        choices=["iam", "gcs", "gke", "functions", "firewall", "project"],
+        choices=[
+            "iam", "gcs", "gke", "functions", "firewall", "project",
+            "cloudrun", "artifactregistry",
+        ],
         default=None,
         help="Ejecutar solo los módulos especificados (por defecto: todos)",
     )
@@ -1787,12 +2115,14 @@ async def _main_async(args: argparse.Namespace) -> int:
         # Si se especificaron módulos concretos, parchear los módulos disponibles
         if args.modules:
             mod_map = {
-                "iam":       audit_iam,
-                "gcs":       audit_gcs,
-                "gke":       audit_gke,
-                "functions": audit_functions,
-                "firewall":  audit_firewall,
-                "project":   audit_project,
+                "iam":                audit_iam,
+                "gcs":                audit_gcs,
+                "gke":                audit_gke,
+                "functions":          audit_functions,
+                "firewall":           audit_firewall,
+                "project":            audit_project,
+                "cloudrun":           audit_cloud_run,           # v1.1
+                "artifactregistry":   audit_artifact_registry,   # v1.1
             }
             # Ejecutar solo los módulos seleccionados
             findings: list[Finding] = []
