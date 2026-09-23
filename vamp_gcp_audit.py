@@ -4,7 +4,7 @@
 vamp_gcp_audit.py — Auditor de Seguridad de Entornos Google Cloud Platform
 ===========================================================================
 VampSecure Labs · VampSecure Studios
-Para Uso Exclusivo en Pruebas de Penetración Autorizadas — v1.0
+Para Uso Exclusivo en Pruebas de Penetración Autorizadas — v1.2
 
 DESCRIPCIÓN GENERAL
 -------------------
@@ -91,7 +91,7 @@ from rich.text import Text
 # Constantes y configuración global
 # ---------------------------------------------------------------------------
 
-VERSION   = "1.1"
+VERSION   = "1.2"
 TOOL_NAME = "vamp-gcp-audit"
 
 console = Console()
@@ -1715,6 +1715,312 @@ async def audit_artifact_registry(client: GCPClient) -> list[Finding]:
 
 
 # ---------------------------------------------------------------------------
+# Módulo 9: BigQuery Security — v1.2
+# ---------------------------------------------------------------------------
+
+GCP_BQ_API = "https://bigquery.googleapis.com"
+GCP_PS_API = "https://pubsub.googleapis.com"
+
+
+async def audit_bigquery(client: GCPClient) -> list[Finding]:
+    """
+    Audita datasets y tablas de BigQuery en busca de exposición pública y
+    datos potencialmente sensibles (v1.2).
+
+    Comprobaciones:
+      - Dataset con acceso 'allUsers' o 'allAuthenticatedUsers' (CRITICAL)
+      - Nombres de tabla con indicios de datos PII o financieros (MEDIUM)
+
+    Si gcloud CLI no está disponible, emite un hallazgo INFO y retorna.
+    """
+    findings: list[Finding] = []
+    project  = client.project_id
+
+    # Verificar disponibilidad de gcloud
+    try:
+        res_ver = subprocess.run(
+            ["gcloud", "version", "--format=json"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if res_ver.returncode != 0:
+            findings.append(Finding(
+                tool=TOOL_NAME, severity="INFO",
+                type="bq-gcloud-unavailable",
+                title="gcloud CLI no disponible — checks BigQuery/PubSub omitidos",
+                description=(
+                    "No se pudo ejecutar gcloud. Instálalo para activar la "
+                    "auditoría de BigQuery y Pub/Sub."
+                ),
+                affected=project,
+                recommendation=(
+                    "Instalar gcloud CLI: https://cloud.google.com/sdk/docs/install"
+                ),
+                module="BigQuery",
+            ))
+            return findings
+    except FileNotFoundError:
+        findings.append(Finding(
+            tool=TOOL_NAME, severity="INFO",
+            type="bq-gcloud-unavailable",
+            title="gcloud CLI no disponible — checks BigQuery/PubSub omitidos",
+            description=(
+                "gcloud no está instalado o no está en el PATH. Instálalo para "
+                "auditar BigQuery y Pub/Sub."
+            ),
+            affected=project,
+            recommendation=(
+                "Instalar gcloud CLI: https://cloud.google.com/sdk/docs/install"
+            ),
+            module="BigQuery",
+        ))
+        return findings
+    except subprocess.TimeoutExpired:
+        return findings
+
+    # Listar datasets del proyecto
+    try:
+        res_ds = subprocess.run(
+            ["gcloud", "bigquery", "datasets", "list",
+             f"--project={project}", "--format=json"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if res_ds.returncode != 0 or not res_ds.stdout.strip():
+            return findings
+        datasets = json.loads(res_ds.stdout)
+    except (json.JSONDecodeError, subprocess.TimeoutExpired):
+        return findings
+
+    # Palabras clave que indican datos sensibles en nombres de tabla
+    PALABRAS_SENSIBLES = {"pii", "personal", "gdpr", "credit", "ssn", "password"}
+
+    for ds in datasets:
+        ds_id  = ds.get("datasetReference", {}).get("datasetId", "?")
+        ds_ref = f"{project}:{ds_id}"
+
+        # Comprobar IAM del dataset en busca de allUsers / allAuthenticatedUsers
+        try:
+            res_iam = subprocess.run(
+                ["gcloud", "bigquery", "datasets", "get-iam-policy",
+                 ds_ref, "--format=json"],
+                capture_output=True, text=True, timeout=20,
+            )
+            if res_iam.returncode == 0 and res_iam.stdout.strip():
+                politica = json.loads(res_iam.stdout)
+                for binding in politica.get("bindings", []):
+                    members = binding.get("members", [])
+                    if "allUsers" in members:
+                        findings.append(Finding(
+                            tool=TOOL_NAME, severity="CRITICAL",
+                            type="bq-public-access-all",
+                            title=(
+                                f"BigQuery dataset '{ds_id}' accesible "
+                                "públicamente (allUsers)"
+                            ),
+                            description=(
+                                f"El dataset '{ds_id}' tiene permisos asignados "
+                                "a 'allUsers'. Cualquier usuario de internet puede "
+                                "leer o escribir sin autenticación, exponiendo "
+                                "potencialmente datos sensibles."
+                            ),
+                            affected=ds_ref,
+                            recommendation=(
+                                "Eliminar el binding 'allUsers' del dataset:\n"
+                                f"  gcloud bigquery datasets remove-iam-policy-binding "
+                                f"{ds_ref} --member='allUsers' --role=ROLE"
+                            ),
+                            module="BigQuery",
+                        ))
+                    elif "allAuthenticatedUsers" in members:
+                        findings.append(Finding(
+                            tool=TOOL_NAME, severity="CRITICAL",
+                            type="bq-public-access-auth",
+                            title=(
+                                f"BigQuery dataset '{ds_id}' accesible por "
+                                "todos los usuarios autenticados de Google"
+                            ),
+                            description=(
+                                f"El dataset '{ds_id}' tiene permisos asignados "
+                                "a 'allAuthenticatedUsers'. Cualquier cuenta de "
+                                "Google autenticada puede acceder a los datos."
+                            ),
+                            affected=ds_ref,
+                            recommendation=(
+                                "Cambiar el acceso para usar identidades específicas "
+                                "en lugar de 'allAuthenticatedUsers'."
+                            ),
+                            module="BigQuery",
+                        ))
+        except (json.JSONDecodeError, subprocess.TimeoutExpired):
+            pass
+
+        # Comprobar nombres de tablas con indicios de datos sensibles
+        try:
+            res_tabs = subprocess.run(
+                ["gcloud", "bigquery", "tables", "list",
+                 f"--dataset={ds_id}", f"--project={project}", "--format=json"],
+                capture_output=True, text=True, timeout=20,
+            )
+            if res_tabs.returncode == 0 and res_tabs.stdout.strip():
+                tablas = json.loads(res_tabs.stdout)
+                for tabla in tablas:
+                    tabla_id = (
+                        tabla.get("tableReference", {})
+                        .get("tableId", "")
+                        .lower()
+                    )
+                    if any(p in tabla_id for p in PALABRAS_SENSIBLES):
+                        findings.append(Finding(
+                            tool=TOOL_NAME, severity="MEDIUM",
+                            type="bq-sensitive-table-name",
+                            title=(
+                                f"BigQuery tabla '{tabla_id}' puede contener "
+                                "datos sensibles"
+                            ),
+                            description=(
+                                f"La tabla '{tabla_id}' en el dataset '{ds_id}' "
+                                "tiene un nombre que sugiere la presencia de datos "
+                                "PII, financieros o de acceso. Verificar que está "
+                                "adecuadamente protegida."
+                            ),
+                            affected=f"{ds_ref}.{tabla_id}",
+                            recommendation=(
+                                "Verificar los controles de acceso de la tabla y "
+                                "aplicar enmascaramiento de datos o Column-Level "
+                                "Security si contiene PII:\n"
+                                f"  gcloud bigquery tables get-iam-policy "
+                                f"{ds_ref}.{tabla_id}"
+                            ),
+                            module="BigQuery",
+                        ))
+        except (json.JSONDecodeError, subprocess.TimeoutExpired):
+            pass
+
+    return findings
+
+
+# ---------------------------------------------------------------------------
+# Módulo 10: Pub/Sub Security — v1.2
+# ---------------------------------------------------------------------------
+
+async def audit_pubsub(client: GCPClient) -> list[Finding]:
+    """
+    Audita topics y suscripciones de Pub/Sub en busca de acceso público (v1.2).
+
+    Comprobaciones:
+      - Topic con IAM binding 'allUsers' (HIGH)
+      - Suscripción push sin oidcToken configurado (MEDIUM)
+
+    Si gcloud CLI no está disponible, retorna sin hallazgos (el aviso ya
+    lo emite audit_bigquery para no duplicarlo).
+    """
+    findings: list[Finding] = []
+    project  = client.project_id
+
+    # Verificar disponibilidad de gcloud (silencioso: el aviso va en audit_bigquery)
+    try:
+        res_ver = subprocess.run(
+            ["gcloud", "version", "--format=json"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if res_ver.returncode != 0:
+            return findings
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return findings
+
+    # Listar topics y comprobar IAM
+    try:
+        res_topics = subprocess.run(
+            ["gcloud", "pubsub", "topics", "list",
+             f"--project={project}", "--format=json"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if res_topics.returncode == 0 and res_topics.stdout.strip():
+            topics = json.loads(res_topics.stdout)
+            for topic in topics:
+                topic_name  = topic.get("name", "?")
+                topic_short = topic_name.split("/")[-1]
+
+                try:
+                    res_iam = subprocess.run(
+                        ["gcloud", "pubsub", "topics", "get-iam-policy",
+                         topic_short, f"--project={project}", "--format=json"],
+                        capture_output=True, text=True, timeout=20,
+                    )
+                    if res_iam.returncode == 0 and res_iam.stdout.strip():
+                        politica = json.loads(res_iam.stdout)
+                        for binding in politica.get("bindings", []):
+                            if "allUsers" in binding.get("members", []):
+                                findings.append(Finding(
+                                    tool=TOOL_NAME, severity="HIGH",
+                                    type="ps-topic-public",
+                                    title=(
+                                        f"Pub/Sub topic '{topic_short}' "
+                                        "accesible públicamente"
+                                    ),
+                                    description=(
+                                        f"El topic '{topic_short}' tiene permisos "
+                                        "asignados a 'allUsers'. Cualquier usuario "
+                                        "de internet puede publicar o suscribirse "
+                                        "sin autenticación."
+                                    ),
+                                    affected=topic_name,
+                                    recommendation=(
+                                        "Eliminar el binding 'allUsers' del topic:\n"
+                                        f"  gcloud pubsub topics remove-iam-policy-binding "
+                                        f"{topic_short} --project={project} "
+                                        "--member='allUsers' --role=ROLE"
+                                    ),
+                                    module="PubSub",
+                                ))
+                except (json.JSONDecodeError, subprocess.TimeoutExpired):
+                    pass
+    except (json.JSONDecodeError, subprocess.TimeoutExpired):
+        pass
+
+    # Listar suscripciones y comprobar push sin oidcToken
+    try:
+        res_subs = subprocess.run(
+            ["gcloud", "pubsub", "subscriptions", "list",
+             f"--project={project}", "--format=json"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if res_subs.returncode == 0 and res_subs.stdout.strip():
+            subs = json.loads(res_subs.stdout)
+            for sub in subs:
+                sub_name  = sub.get("name", "?")
+                sub_short = sub_name.split("/")[-1]
+                push_cfg  = sub.get("pushConfig", {})
+
+                if push_cfg.get("pushEndpoint") and not push_cfg.get("oidcToken"):
+                    findings.append(Finding(
+                        tool=TOOL_NAME, severity="MEDIUM",
+                        type="ps-push-no-oidc",
+                        title=(
+                            f"Pub/Sub suscripción '{sub_short}': push sin oidcToken"
+                        ),
+                        description=(
+                            f"La suscripción push '{sub_short}' no tiene oidcToken "
+                            "configurado. Sin autenticación OIDC, el endpoint de "
+                            "push no puede verificar que las peticiones provienen "
+                            "de Pub/Sub y puede ser vulnerable a inyección de "
+                            "mensajes arbitrarios."
+                        ),
+                        affected=sub_name,
+                        recommendation=(
+                            "Configurar oidcToken en la suscripción push:\n"
+                            f"  gcloud pubsub subscriptions modify-push-config "
+                            f"{sub_short} --project={project} "
+                            "--push-auth-service-account=<SA>@<project>.iam.gserviceaccount.com"
+                        ),
+                        module="PubSub",
+                    ))
+    except (json.JSONDecodeError, subprocess.TimeoutExpired):
+        pass
+
+    return findings
+
+
+# ---------------------------------------------------------------------------
 # GCPAuditor — orquestador de todos los módulos
 # ---------------------------------------------------------------------------
 
@@ -1752,6 +2058,8 @@ class GCPAuditor:
             ("Project-Level Risks",    audit_project),
             ("Cloud Run Services",     audit_cloud_run),        # v1.1
             ("Artifact Registry",      audit_artifact_registry), # v1.1
+            ("BigQuery Security",      audit_bigquery),          # v1.2
+            ("Pub/Sub Security",       audit_pubsub),            # v1.2
         ]
 
         # Ejecutar todos los módulos en paralelo
@@ -2123,6 +2431,8 @@ async def _main_async(args: argparse.Namespace) -> int:
                 "project":            audit_project,
                 "cloudrun":           audit_cloud_run,           # v1.1
                 "artifactregistry":   audit_artifact_registry,   # v1.1
+                "bigquery":           audit_bigquery,             # v1.2
+                "pubsub":             audit_pubsub,               # v1.2
             }
             # Ejecutar solo los módulos seleccionados
             findings: list[Finding] = []

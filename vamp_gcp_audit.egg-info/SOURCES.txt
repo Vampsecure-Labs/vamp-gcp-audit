@@ -1,0 +1,10 @@
+LICENSE
+README.md
+pyproject.toml
+vamp_gcp_audit.py
+vamp_gcp_audit.egg-info/PKG-INFO
+vamp_gcp_audit.egg-info/SOURCES.txt
+vamp_gcp_audit.egg-info/dependency_links.txt
+vamp_gcp_audit.egg-info/entry_points.txt
+vamp_gcp_audit.egg-info/requires.txt
+vamp_gcp_audit.egg-info/top_level.txt

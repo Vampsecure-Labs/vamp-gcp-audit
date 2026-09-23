@@ -1,0 +1,2 @@
+[console_scripts]
+vamp-gcp-audit = vamp_gcp_audit:main
