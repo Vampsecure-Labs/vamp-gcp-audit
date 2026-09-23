@@ -1,3 +1,4 @@
+<!-- © VampSecure Studios — VampSecure Labs Security Research Division -->
 # vamp-gcp-audit
 
 **VampSecure Labs · VampSecure Studios**
@@ -9,6 +10,13 @@ la API REST de GCP (sin SDKs de `google-cloud-*`).
 ---
 
 ## Instalación
+
+
+```bash
+pip install vamp-gcp-audit
+# o con Homebrew:
+brew install vampsecure-labs/labs/vamp-gcp-audit
+```
 
 ```bash
 pip install -r requirements.txt
@@ -92,3 +100,8 @@ python vamp_gcp_audit.py --project PROJECT_ID --credentials /ruta/a/sa-key.json
 
 © VampSecure Studios — VampSecure Labs Security Research Division.
 Uso exclusivo en entornos autorizados.
+
+---
+
+## Versión
+v1.2 — VampSecure Labs Security Research Division
