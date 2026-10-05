@@ -7,11 +7,9 @@ No requiere credenciales ni proyecto GCP activo.
 """
 
 import asyncio
-import json
-import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -19,10 +17,9 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from vamp_gcp_audit import (
-    EXCESSIVE_ROLES,
+    TOOL_NAME,
     Finding,
     GCPClient,
-    TOOL_NAME,
 )
 
 
@@ -35,7 +32,7 @@ def run_async(coro):
 # Helper: mock de sesión aiohttp
 # ---------------------------------------------------------------------------
 
-def _mock_session_get(respuestas: Dict[str, Any]) -> MagicMock:
+def _mock_session_get(respuestas: dict[str, Any]) -> MagicMock:
     """
     Crea sesión aiohttp mockeada.
     respuestas: mapa de fragmento_url → payload dict que devuelve la respuesta.

@@ -14,10 +14,7 @@ Cubre la lógica de análisis de seguridad de GCP sin llamadas HTTP reales:
 import asyncio
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
-from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -26,12 +23,10 @@ from vamp_gcp_audit import (
     EXCESSIVE_ROLES,
     SECRET_ENV_KEYWORDS,
     SENSITIVE_PORTS,
+    TOOL_NAME,
     Finding,
     GCPClient,
-    TOOL_NAME,
-    VERSION,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -184,7 +179,7 @@ class TestCloudFunctionSecretosEnv:
         env_vars = cloud_function_secreto_env.get("environmentVariables", {})
 
         # Verificar que las palabras clave del fixture coinciden con SECRET_ENV_KEYWORDS
-        palabras_sensibles = {k.lower() for k in env_vars.keys()}
+        palabras_sensibles = {k.lower() for k in env_vars}
         detectado = bool(palabras_sensibles & {kw.lower() for kw in SECRET_ENV_KEYWORDS})
 
         assert detectado, (
@@ -198,7 +193,7 @@ class TestCloudFunctionSecretosEnv:
             "REGION": "us-central1",
             "PROJECT_ID": "myproject",
         }
-        palabras_sensibles = {k.lower() for k in env_seguras.keys()}
+        palabras_sensibles = {k.lower() for k in env_seguras}
         detectado = bool(palabras_sensibles & {kw.lower() for kw in SECRET_ENV_KEYWORDS})
         assert not detectado, "Env vars seguras no deben detectarse como secretos"
 

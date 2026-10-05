@@ -70,7 +70,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import os
 import re
 import subprocess
 import sys
@@ -78,11 +77,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from html import escape
 from pathlib import Path
-from typing import Any, Optional
 
 import aiohttp
 from rich.console import Console
-from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -182,16 +179,16 @@ DANGEROUS_APIS = {
     "cloudresourcemanager.googleapis.com": None,
 }
 
-BANNER = r"""
+BANNER = rf"""
 __   ___   __  __ ___  ___ ___ ___ _   _ ___ ___ _      _   ___ ___ 
 \ \ / /_\ |  \/  | _ \/ __| __/ __| | | | _ \ __| |    /_\ | _ ) __|
  \ V / _ \| |\/| |  _/\__ \ _| (__| |_| |   / _|| |__ / _ \| _ \__ \
   \_/_/ \_\_|  |_|_|  |___/___\___|\___/|_|_\___|____/_/ \_\___/___/
   by Antonio Hernandez "Belky" — VampSecure Studios
-  vamp-gcp-audit v{ver} · GCP Security Auditor
+  vamp-gcp-audit v{VERSION} · GCP Security Auditor
   ────────────────────────────────────────────────────────────────────────
   USO EXCLUSIVO EN AUDITORÍAS AUTORIZADAS · El uso no autorizado es ilegal
-""".format(ver=VERSION)
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -243,13 +240,13 @@ class GCPClient:
     def __init__(
         self,
         project_id: str,
-        credentials_file: Optional[str] = None,
-        session: Optional[aiohttp.ClientSession] = None,
+        credentials_file: str | None = None,
+        session: aiohttp.ClientSession | None = None,
     ) -> None:
         self.project_id  = project_id
         self._creds_file = credentials_file
-        self._token:  Optional[str] = None
-        self._session: Optional[aiohttp.ClientSession] = session
+        self._token:  str | None = None
+        self._session: aiohttp.ClientSession | None = session
         self._own_session = session is None
 
     # ------------------------------------------------------------------
@@ -284,8 +281,6 @@ class GCPClient:
         Implementa el flujo JWT→token de Google sin SDKs externos.
         """
         import base64
-        import hashlib
-        import hmac
         import time
 
         with open(creds_path) as f:
@@ -372,7 +367,7 @@ class GCPClient:
         """Devuelve las cabeceras de autenticación Bearer."""
         return {"Authorization": f"Bearer {self._token}"}
 
-    async def get(self, url: str, params: Optional[dict] = None) -> dict:
+    async def get(self, url: str, params: dict | None = None) -> dict:
         """
         Realiza una petición GET autenticada a la API de GCP.
         Devuelve el cuerpo JSON como diccionario.
@@ -386,7 +381,7 @@ class GCPClient:
             return body
 
     async def get_paginated(
-        self, url: str, key: str, params: Optional[dict] = None
+        self, url: str, key: str, params: dict | None = None
     ) -> list:
         """
         Realiza peticiones paginadas a una API GCP que devuelve 'nextPageToken'.
@@ -631,7 +626,7 @@ async def audit_gcs(client: GCPClient) -> list[Finding]:
 
     for bucket in buckets:
         bucket_name = bucket.get("name", "")
-        bucket_id   = bucket.get("id", bucket_name)
+        bucket.get("id", bucket_name)
 
         # 2a. Comprobar si el nombre sugiere contenido sensible
         name_lower = bucket_name.lower()
@@ -972,11 +967,11 @@ async def audit_functions(client: GCPClient) -> list[Finding]:
         func_name  = func.get("name", "")
         func_short = func_name.split("/")[-1]
         service_cfg = func.get("serviceConfig", {})
-        build_cfg   = func.get("buildConfig", {})
+        func.get("buildConfig", {})
 
         # 4a. Comprobar si la función tiene trigger HTTP sin HTTPS forzado
         # En v2, el trigger es 'serviceConfig.uri' y puede tener httpsTrigger
-        labels = func.get("labels", {})
+        func.get("labels", {})
         trigger = func.get("httpsTrigger", {}) or {}
         security_level = trigger.get("securityLevel", "")
         # En v2 las funciones con trigger HTTP exponen una URL en serviceConfig
@@ -1295,7 +1290,7 @@ async def audit_project(client: GCPClient) -> list[Finding]:
         audit_configs: list[dict] = policy.get("auditConfigs", [])
 
         # Buscar configuración de audit logging para allServices
-        all_services_cfg: Optional[dict] = None
+        all_services_cfg: dict | None = None
         for cfg in audit_configs:
             if cfg.get("service") == "allServices":
                 all_services_cfg = cfg
@@ -2131,8 +2126,8 @@ class GCPAuditor:
     def __init__(self, client: GCPClient) -> None:
         self.client   = client
         self.findings: list[Finding] = []
-        self._start_time: Optional[datetime] = None
-        self._end_time:   Optional[datetime] = None
+        self._start_time: datetime | None = None
+        self._end_time:   datetime | None = None
 
     async def run(self) -> list[Finding]:
         """Ejecuta todos los módulos de auditoría en paralelo."""
@@ -2503,9 +2498,9 @@ async def _main_async(args: argparse.Namespace) -> int:
     )
 
     try:
-        console.print(f"  [dim]Autenticando con GCP...[/dim]")
+        console.print("  [dim]Autenticando con GCP...[/dim]")
         await client.authenticate()
-        console.print(f"  [green]✓[/green] Autenticación correcta")
+        console.print("  [green]✓[/green] Autenticación correcta")
     except RuntimeError as exc:
         console.print(f"[bold red]Error de autenticación:[/bold red] {exc}")
         await client.close()
