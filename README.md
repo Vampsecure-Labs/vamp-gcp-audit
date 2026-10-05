@@ -1,4 +1,6 @@
 <!-- © VampSecure Studios — VampSecure Labs Security Research Division -->
+
+  <img src="https://github.com/Vampsecure-Labs/vamp-gcp-audit/actions/workflows/ci.yml/badge.svg" alt="CI"/>
 # vamp-gcp-audit
 
 **VampSecure Labs · VampSecure Studios**
