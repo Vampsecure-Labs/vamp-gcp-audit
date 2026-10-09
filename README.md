@@ -5,14 +5,205 @@
 
 **VampSecure Labs · VampSecure Studios**
 
+> 🇬🇧 [English](#english) · 🇪🇸 [Español](#español)
+
+---
+
+<a name="english"></a>
+## 🇬🇧 English
+
+Non-destructive security auditor for Google Cloud Platform environments. Detects critical misconfigurations in IAM, GCS, GKE, Cloud Functions, Firewall, and project settings using only the GCP REST API (no `google-cloud-*` SDKs required).
+
+---
+
+### Installation
+
+```bash
+pip install vamp-gcp-audit
+# or with Homebrew:
+brew install vampsecure-labs/labs/vamp-gcp-audit
+```
+
+```bash
+pip install -r requirements.txt
+```
+
+> `cryptography` is only required if you use `--credentials` with a service account JSON file.
+
+---
+
+### Usage
+
+```bash
+# With gcloud ADC credentials (gcloud auth application-default login)
+python vamp_gcp_audit.py --project my-project-id
+
+# With a service account file
+python vamp_gcp_audit.py --project my-project-id --credentials sa-key.json
+
+# Save JSON and HTML reports
+python vamp_gcp_audit.py --project my-project-id --json findings.json --html report.html
+
+# Run only specific modules
+python vamp_gcp_audit.py --project my-project-id --modules iam firewall
+
+# Quiet mode (no summary table in console)
+python vamp_gcp_audit.py --project my-project-id --quiet --json out.json
+```
+
+---
+
+### Audit Modules
+
+| Module | Description |
+|--------|-------------|
+| `iam` | Service accounts with excessive roles, aged keys |
+| `gcs` | Public buckets, legacy ACLs, logging/versioning |
+| `gke` | Legacy RBAC, static auth, Network Policy, endpoints |
+| `functions` | HTTPS, authentication, secrets in env vars, default SA |
+| `firewall` | Sensitive ports exposed, allow-all, logging |
+| `project` | Dangerous APIs, audit logging, org policy |
+
+---
+
+### Required GCP Permissions
+
+The account or service account used needs the following minimum read-only roles:
+
+- `roles/viewer` (base)
+- `roles/iam.securityReviewer`
+- `roles/container.viewer`
+- `roles/cloudfunctions.viewer`
+
+---
+
+### Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | No CRITICAL or HIGH findings |
+| `1` | CRITICAL or HIGH findings found |
+| `2` | Authentication or execution error |
+
+---
+
+### Authentication
+
+#### gcloud ADC (recommended for local use)
+
+```bash
+gcloud auth application-default login
+python vamp_gcp_audit.py --project PROJECT_ID
+```
+
+#### Service Account JSON
+
+```bash
+python vamp_gcp_audit.py --project PROJECT_ID --credentials /path/to/sa-key.json
+```
+
+---
+
+### Sample Output
+
+```text
+vamp-gcp-audit v1.3 · project: my-prod-project
+─────────────────────────────────────────────────────────────────────────
+[CRITICAL] IAM-003  Service account key age > 90 days
+           sa: api-backend@my-prod-project.iam.gserviceaccount.com
+           key_id: a1b2c3d4e5  created: 2026-06-10
+[CRITICAL] GKE-002  Static basic authentication enabled on cluster
+           cluster: prod-cluster  region: europe-west1
+[HIGH]     GCS-001  Bucket publicly accessible via allUsers IAM binding
+           bucket: my-prod-project-assets
+           binding: allUsers → roles/storage.objectViewer
+[HIGH]     GKE-004  Master authorized networks not configured
+           cluster: prod-cluster  endpoint public, unrestricted
+[HIGH]     GCS-002  Access logging disabled on bucket: my-prod-backups
+[MEDIUM]   FW-001   Firewall rule allow-ssh: port 22 open to 0.0.0.0/0
+[MEDIUM]   PROJECT-001  Cloud Audit Logging not enabled for storage.googleapis.com
+[LOW]      GCS-003  Object versioning not enabled: my-prod-assets
+
+┌──────────────┬──────┬──────┬────────┬──────┬──────────────┐
+│ Module       │ Chks │ Pass │  Fail  │ Skip │ Findings     │
+├──────────────┼──────┼──────┼────────┼──────┼──────────────┤
+│ iam          │  12  │   9  │   2    │   1  │ 1C 1H        │
+│ gcs          │   9  │   5  │   3    │   1  │ 1H 1M 1L     │
+│ gke          │  11  │   8  │   2    │   1  │ 1C 1H        │
+│ firewall     │   8  │   6  │   1    │   1  │ 1M           │
+│ project      │   6  │   4  │   1    │   1  │ 1M           │
+└──────────────┴──────┴──────┴────────┴──────┴──────────────┘
+2 CRITICAL · 3 HIGH · 2 MEDIUM · 1 LOW   exit 1
+```
+
+---
+
+### Why vamp-gcp-audit vs. Forseti Security · ScoutSuite · CloudSploit
+
+| Feature | vamp-gcp-audit | Forseti Security | ScoutSuite | CloudSploit |
+|---|---|---|---|---|
+| No `google-cloud-*` SDK | ✅ REST API only | ❌ requires SDK | ❌ requires SDK | ✅ |
+| Standalone dark-theme HTML output | ✅ | ❌ web dashboard only | ✅ | ❌ |
+| No own infrastructure needed | ✅ zero extra deps | ❌ Kubernetes + Cloud SQL | ✅ | ✅ |
+| GKE module (RBAC, auth, NetworkPolicy) | ✅ | ✅ | ⚠️ partial | ⚠️ partial |
+| Cloud Functions module (env secrets, SA) | ✅ | ❌ | ⚠️ partial | ✅ |
+| CI/CD exit codes 0/1/2 | ✅ | ❌ | ✅ | ✅ |
+| VSL toolkit integration (unified JSON) | ✅ | ❌ | ❌ | ❌ |
+
+- **No proprietary SDK**: only `urllib` + direct REST; no version conflicts, no chain of 20 `google-cloud-*` packages.
+- **Minimal installation**: `pip install vamp-gcp-audit` works from scratch on any CI runner.
+- **No own infrastructure**: Forseti requires deploying its own server on GKE plus Cloud SQL; here there is no state or database.
+- **Part of the unified VSL toolkit**: the JSON findings are consumable by `vamp-orchestrator` together with those from all other modules.
+
+---
+
+### Check Coverage
+
+| Check ID | Description | Standard | Severity |
+|----------|-------------|----------|----------|
+| IAM-001 | Service account with editor/owner role at project level | CIS GCP Benchmark v2.0 §1.5 | HIGH |
+| IAM-002 | Service account with org-level IAM binding | CIS GCP v2.0 §1.6 | HIGH |
+| IAM-003 | Service account key older than 90 days | CIS GCP v2.0 §1.7 / NIST CSF PR.AC-1 | CRITICAL |
+| IAM-004 | User-managed service account key present | CIS GCP v2.0 §1.7 | MEDIUM |
+| GCS-001 | Bucket accessible by allUsers or allAuthenticatedUsers | CIS GCP v2.0 §5.1 / NIST CSF PR.DS-5 | CRITICAL |
+| GCS-002 | Access logging disabled on storage bucket | CIS GCP v2.0 §5.3 / NIST CSF DE.AE-3 | HIGH |
+| GCS-003 | Object versioning disabled on bucket | CIS GCP v2.0 §5.4 | MEDIUM |
+| GKE-001 | Legacy ABAC authorization enabled on cluster | CIS GCP v2.0 §7.5 | CRITICAL |
+| GKE-002 | Basic authentication enabled on GKE master | CIS GCP v2.0 §7.1 / NIST CSF PR.AC-1 | CRITICAL |
+| GKE-003 | Network Policy not enabled on cluster | CIS GCP v2.0 §7.11 | HIGH |
+| GKE-004 | Master authorized networks not configured | CIS GCP v2.0 §7.4 / NIST CSF PR.AC-5 | HIGH |
+| FW-001 | Firewall rule allows SSH (22) from 0.0.0.0/0 | CIS GCP v2.0 §3.6 | CRITICAL |
+| FW-002 | Firewall rule allows RDP (3389) from 0.0.0.0/0 | CIS GCP v2.0 §3.7 | CRITICAL |
+| PROJECT-001 | Cloud Audit Logging not enabled for all services | CIS GCP v2.0 §2.1 / NIST CSF DE.AE-3 | MEDIUM |
+| SQL-001 | Cloud SQL instance publicly accessible | CIS GCP v2.0 §6.2 / NIST CSF PR.DS-5 | HIGH |
+| SQL-002 | Cloud SQL without SSL/TLS enforcement | CIS GCP v2.0 §6.4 | HIGH |
+
+---
+
+### Version History
+
+| Version | Main changes |
+|---------|-------------|
+| v1.3 | Bilingual README (EN/ES) |
+| v1.2 | Initial public release — 6 modules, 16 checks, REST-only, dark-theme HTML report |
+
+---
+
+© VampSecure Studios — VampSecure Labs Security Research Division.
+For authorized environments only.
+
+---
+
+<a name="español"></a>
+## 🇪🇸 Español
+
 Auditor de seguridad no-destructivo para entornos Google Cloud Platform. Detecta misconfiguraciones
 críticas en IAM, GCS, GKE, Cloud Functions, Firewall y configuración de proyecto usando únicamente
 la API REST de GCP (sin SDKs de `google-cloud-*`).
 
 ---
 
-## Instalación
-
+### Instalación
 
 ```bash
 pip install vamp-gcp-audit
@@ -28,7 +219,7 @@ pip install -r requirements.txt
 
 ---
 
-## Uso
+### Uso
 
 ```bash
 # Con credenciales de gcloud ADC (gcloud auth application-default login)
@@ -49,7 +240,7 @@ python vamp_gcp_audit.py --project my-project-id --quiet --json out.json
 
 ---
 
-## Módulos de auditoría
+### Módulos de auditoría
 
 | Módulo          | Descripción                                                |
 |-----------------|------------------------------------------------------------|
@@ -62,7 +253,7 @@ python vamp_gcp_audit.py --project my-project-id --quiet --json out.json
 
 ---
 
-## Permisos GCP necesarios
+### Permisos GCP necesarios
 
 La cuenta o service account usada necesita los siguientes roles mínimos de solo lectura:
 
@@ -73,7 +264,7 @@ La cuenta o service account usada necesita los siguientes roles mínimos de solo
 
 ---
 
-## Exit codes
+### Exit codes
 
 | Código | Significado                              |
 |--------|------------------------------------------|
@@ -83,16 +274,16 @@ La cuenta o service account usada necesita los siguientes roles mínimos de solo
 
 ---
 
-## Autenticación
+### Autenticación
 
-### gcloud ADC (recomendado para uso local)
+#### gcloud ADC (recomendado para uso local)
 
 ```bash
 gcloud auth application-default login
 python vamp_gcp_audit.py --project PROJECT_ID
 ```
 
-### Service Account JSON
+#### Service Account JSON
 
 ```bash
 python vamp_gcp_audit.py --project PROJECT_ID --credentials /ruta/a/sa-key.json
@@ -100,10 +291,10 @@ python vamp_gcp_audit.py --project PROJECT_ID --credentials /ruta/a/sa-key.json
 
 ---
 
-## Sample Output
+### Salida de ejemplo
 
 ```text
-vamp-gcp-audit v1.2 · project: my-prod-project
+vamp-gcp-audit v1.3 · project: my-prod-project
 ─────────────────────────────────────────────────────────────────────────
 [CRITICAL] IAM-003  Service account key age > 90 days
            sa: api-backend@my-prod-project.iam.gserviceaccount.com
@@ -134,7 +325,7 @@ vamp-gcp-audit v1.2 · project: my-prod-project
 
 ---
 
-## Why vamp-gcp-audit vs. Forseti Security · ScoutSuite · CloudSploit
+### Por qué vamp-gcp-audit frente a Forseti Security · ScoutSuite · CloudSploit
 
 | Característica | vamp-gcp-audit | Forseti Security | ScoutSuite | CloudSploit |
 |---|---|---|---|---|
@@ -153,7 +344,7 @@ vamp-gcp-audit v1.2 · project: my-prod-project
 
 ---
 
-## Check Coverage
+### Cobertura de checks
 
 | Check ID | Description | Standard | Severity |
 |----------|-------------|----------|----------|
@@ -176,10 +367,14 @@ vamp-gcp-audit v1.2 · project: my-prod-project
 
 ---
 
-© VampSecure Studios — VampSecure Labs Security Research Division.
-Uso exclusivo en entornos autorizados.
+### Historial de versiones
+
+| Versión | Cambios principales |
+|---------|---------------------|
+| v1.3 | README bilingüe (EN/ES) |
+| v1.2 | Lanzamiento público inicial — 6 módulos, 16 checks, solo REST, informe HTML dark-theme |
 
 ---
 
-## Versión
-v1.2 — VampSecure Labs Security Research Division
+© VampSecure Studios — VampSecure Labs Security Research Division.
+Uso exclusivo en entornos autorizados.
